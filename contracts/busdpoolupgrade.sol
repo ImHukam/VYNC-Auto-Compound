@@ -51,7 +51,7 @@ interface TreasuryInterface {
     function send(address, uint256) external;
 }
 
-contract BUSDVYNCSTAKE is
+contract BUSDVYNCSTAKE_V2 is
     Initializable,
     ReentrancyGuardUpgradeable,
     OwnableUpgradeable
@@ -759,6 +759,9 @@ contract BUSDVYNCSTAKE is
 
         treasury.send(msg.sender, reward);
         emit rewardClaim(msg.sender, reward);
+        if(userInfo[msg.sender].autoClaimWithStakeUnstake != 0){
+            userInfo[msg.sender].stakeBalanceWithReward = userInfo[msg.sender].stakeBalanceWithReward- userInfo[msg.sender].autoClaimWithStakeUnstake;
+        }
         userInfo[msg.sender].autoClaimWithStakeUnstake = 0;
         userInfo[msg.sender].lastClaimTimestamp = block.timestamp;
         userInfo[msg.sender].nextCompoundDuringClaim = nextCompound();
