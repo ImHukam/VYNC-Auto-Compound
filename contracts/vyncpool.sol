@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface BusdPrice {
     function price() external view returns (uint256); //price in 18 decimals
@@ -28,7 +29,7 @@ interface GetDataInterface {
             uint256,
             bool
         );
-        
+
     function returnMaxStakeUnstake()
         external
         view
@@ -59,27 +60,18 @@ interface VyncMigrate {
         uint256 nextCompoundDuringClaim;
         uint256 lastCompoundedRewardWithStakeUnstakeClaim;
     }
-    function userInfo(address)
-        external
-        view
-        returns (userInfoData memory);
-    function compoundedReward(address user)
-        external
-        view
-        returns (uint256);
+
+    function userInfo(address) external view returns (userInfoData memory);
+
+    function compoundedReward(address user) external view returns (uint256);
 }
 
-contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
+contract VYNCSTAKEPOOL is
+    Initializable,
+    ReentrancyGuardUpgradeable,
+    OwnableUpgradeable
+{
     using SafeMath for uint256;
-
-    address public dataAddress = 0x303b6c5673D0cF94588C46D317e61ef420C042fb;
-    GetDataInterface data = GetDataInterface(dataAddress);
-    address public busdPriceAddress = 0x423Ca4a1077825B3E818A1817B27daBf5096cC04;
-    BusdPrice busdPrice = BusdPrice(busdPriceAddress);
-    address public TreasuryAddress = 0xA4FE6E8150770132c32e4204C2C1Ff59783eDfA0;
-    TreasuryInterface treasury = TreasuryInterface(TreasuryAddress);
-    address public migrateAddress = 0x5083093F3e6044B15369Fb49c6e374010e5aE506;
-    VyncMigrate migrate = VyncMigrate(migrateAddress);
 
     struct stakeInfoData {
         uint256 compoundStart;
@@ -102,24 +94,30 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
         uint256 lastCompoundedRewardWithStakeUnstakeClaim;
     }
 
-    IERC20 public vync = IERC20(0x71BE9BA58e0271b967a980eD8e59C07fF2108C85);
-
-    uint256 decimal4 = 1e4;
-    uint256 decimal18 = 1e18;
+    IERC20 public vync;
+    address public dataAddress;
+    GetDataInterface data;
+    address public busdPriceAddress;
+    BusdPrice busdPrice;
+    address public TreasuryAddress;
+    TreasuryInterface treasury;
+    address public migrateAddress;
+    VyncMigrate migrate;
     mapping(address => userInfoData) public userInfo;
+    mapping(address => bool) public isBlock;
+    mapping(address => bool) public stopMigrate;
     stakeInfoData public stakeInfo;
+    uint256 decimal4;
+    uint256 decimal18;
     uint256 s; // total staking amount
     uint256 u; //total unstaking amount
     uint256 s_v; //total stake in vync
     uint256 u_v; // total unstake in vync
-    bool public isClaim = true;
+    bool public isClaim;
     bool public fixUnstakeAmount;
-    uint256 public stake_fee = 5 * decimal18;
-    uint256 public unstake_fee = 5 * decimal18;
-    bool public isMigrate = true;
-
-    mapping(address => bool) public isBlock;
-    mapping(address => bool) public stopMigrate;
+    uint256 public stake_fee;
+    uint256 public unstake_fee;
+    bool public isMigrate;
 
     event rewardClaim(address indexed user, uint256 rewards);
     event Stake(address account, uint256 stakeAmount);
@@ -128,8 +126,25 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
     event TreasuryAddressSet(address newTreasuryAddresss);
     event SetCompoundStart(uint256 _blocktime);
 
-    constructor() {
+    function initialize() public initializer {
+        __Ownable_init_unchained();
+        __ReentrancyGuard_init_unchained();
         stakeInfo.compoundStart = block.timestamp;
+        dataAddress = 0x303b6c5673D0cF94588C46D317e61ef420C042fb;
+        data = GetDataInterface(dataAddress);
+        busdPriceAddress = 0x423Ca4a1077825B3E818A1817B27daBf5096cC04;
+        busdPrice = BusdPrice(busdPriceAddress);
+        TreasuryAddress = 0xA4FE6E8150770132c32e4204C2C1Ff59783eDfA0;
+        treasury = TreasuryInterface(TreasuryAddress);
+        migrateAddress = 0x5083093F3e6044B15369Fb49c6e374010e5aE506;
+        migrate = VyncMigrate(migrateAddress);
+        vync = IERC20(0x71BE9BA58e0271b967a980eD8e59C07fF2108C85);
+        decimal4 = 1e4;
+        decimal18 = 1e18;
+        isClaim = true;
+        stake_fee = 5 * decimal18;
+        unstake_fee = 5 * decimal18;
+        isMigrate = true;
     }
 
     function set_compoundStart(uint256 _blocktime) public onlyOwner {
@@ -280,7 +295,7 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
         emit UnStake(msg.sender, amount);
 
         // reward update
-        if ((amount+unstake_fee) < stakeBalance) {
+        if ((amount + unstake_fee) < stakeBalance) {
             uint256 _pendingReward = compoundedReward(msg.sender);
 
             userInfo[msg.sender]
@@ -309,7 +324,7 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
             u_v = u_v + vyncAmount + fee;
         }
 
-        if ((amount+unstake_fee) >= stakeBalance) {
+        if ((amount + unstake_fee) >= stakeBalance) {
             u = u + stakeBalance;
             u_v = u_v + vyncAmount + fee;
             userInfo[msg.sender].pendingRewardAfterFullyUnstake = pending;
@@ -492,7 +507,7 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
                 userInfo[user].pendingRewardAfterFullyUnstake;
         }
 
-         (
+        (
             uint256 aprChangeTimestamp,
             uint256 aprChangePercentage,
             bool isAprIncrease
@@ -638,7 +653,7 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
             userInfo[user].lastClaimedReward -
             cPendingReward(user);
 
-                    (
+        (
             uint256 aprChangeTimestamp,
             uint256 aprChangePercentage,
             bool isAprIncrease
@@ -683,6 +698,11 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
 
         treasury.send(msg.sender, rewardAmount);
         emit rewardClaim(msg.sender, rewardAmount);
+        if (userInfo[msg.sender].autoClaimWithStakeUnstake != 0) {
+            userInfo[msg.sender].stakeBalanceWithReward =
+                userInfo[msg.sender].stakeBalanceWithReward -
+                userInfo[msg.sender].autoClaimWithStakeUnstake;
+        }
         userInfo[msg.sender].autoClaimWithStakeUnstake = 0;
         userInfo[msg.sender].lastClaimTimestamp = block.timestamp;
         userInfo[msg.sender].nextCompoundDuringClaim = nextCompound();
@@ -743,7 +763,7 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
         _price = busdPrice.price();
     }
 
-        function set_migrate(bool _isMigrate) public onlyOwner {
+    function set_migrate(bool _isMigrate) public onlyOwner {
         isMigrate = _isMigrate;
     }
 
@@ -763,21 +783,30 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
 
         uint256 _compoundReward = compoundedReward(staker);
 
-        VyncMigrate.userInfoData memory user= migrate.userInfo(staker);
-        userInfo[staker].stakeBalanceWithReward= userInfo[staker].stakeBalanceWithReward + user.stakeBalanceWithReward;
-        userInfo[staker].stakeBalance = userInfo[staker].stakeBalance + user.stakeBalance;
-        userInfo[staker].lastClaimedReward=0;
+        VyncMigrate.userInfoData memory user = migrate.userInfo(staker);
+        userInfo[staker].stakeBalanceWithReward =
+            userInfo[staker].stakeBalanceWithReward +
+            user.stakeBalanceWithReward;
+        userInfo[staker].stakeBalance =
+            userInfo[staker].stakeBalance +
+            user.stakeBalance;
+        userInfo[staker].lastClaimedReward = 0;
         userInfo[staker].lastStakeUnstakeTimestamp = block.timestamp;
         userInfo[staker].lastClaimTimestamp = block.timestamp;
         userInfo[staker].isStaker = true;
         userInfo[staker].totalClaimedReward = 0;
-        userInfo[staker].autoClaimWithStakeUnstake= _compoundReward + migrate.compoundedReward(staker);
-        userInfo[staker].pendingRewardAfterFullyUnstake = userInfo[staker].pendingRewardAfterFullyUnstake + user.pendingRewardAfterFullyUnstake;
+        userInfo[staker].autoClaimWithStakeUnstake =
+            _compoundReward +
+            migrate.compoundedReward(staker);
+        userInfo[staker].pendingRewardAfterFullyUnstake =
+            userInfo[staker].pendingRewardAfterFullyUnstake +
+            user.pendingRewardAfterFullyUnstake;
         userInfo[staker].isClaimAferUnstake;
         userInfo[staker].nextCompoundDuringStakeUnstake = nextCompound();
-        userInfo[staker].nextCompoundDuringClaim= nextCompound();
-        userInfo[staker].lastCompoundedRewardWithStakeUnstakeClaim = user.lastCompoundedRewardWithStakeUnstakeClaim;
-        s= s+user.stakeBalance;
+        userInfo[staker].nextCompoundDuringClaim = nextCompound();
+        userInfo[staker].lastCompoundedRewardWithStakeUnstakeClaim = user
+            .lastCompoundedRewardWithStakeUnstakeClaim;
+        s = s + user.stakeBalance;
 
         stopMigrate[staker] = true;
     }
@@ -788,20 +817,29 @@ contract VYNCSTAKEPOOL is ReentrancyGuard, Ownable {
 
         uint256 _compoundReward = compoundedReward(staker);
 
-        VyncMigrate.userInfoData memory user= migrate.userInfo(staker);
-        userInfo[staker].stakeBalanceWithReward= userInfo[staker].stakeBalanceWithReward + user.stakeBalanceWithReward;
-        userInfo[staker].stakeBalance = userInfo[staker].stakeBalance + user.stakeBalance;
-        userInfo[staker].lastClaimedReward=0;
+        VyncMigrate.userInfoData memory user = migrate.userInfo(staker);
+        userInfo[staker].stakeBalanceWithReward =
+            userInfo[staker].stakeBalanceWithReward +
+            user.stakeBalanceWithReward;
+        userInfo[staker].stakeBalance =
+            userInfo[staker].stakeBalance +
+            user.stakeBalance;
+        userInfo[staker].lastClaimedReward = 0;
         userInfo[staker].lastStakeUnstakeTimestamp = block.timestamp;
         userInfo[staker].lastClaimTimestamp = block.timestamp;
         userInfo[staker].isStaker = true;
         userInfo[staker].totalClaimedReward = 0;
-        userInfo[staker].autoClaimWithStakeUnstake= _compoundReward + migrate.compoundedReward(staker);
-        userInfo[staker].pendingRewardAfterFullyUnstake = userInfo[staker].pendingRewardAfterFullyUnstake + user.pendingRewardAfterFullyUnstake;
+        userInfo[staker].autoClaimWithStakeUnstake =
+            _compoundReward +
+            migrate.compoundedReward(staker);
+        userInfo[staker].pendingRewardAfterFullyUnstake =
+            userInfo[staker].pendingRewardAfterFullyUnstake +
+            user.pendingRewardAfterFullyUnstake;
         userInfo[staker].isClaimAferUnstake;
         userInfo[staker].nextCompoundDuringStakeUnstake = nextCompound();
-        userInfo[staker].nextCompoundDuringClaim= nextCompound();
-        userInfo[staker].lastCompoundedRewardWithStakeUnstakeClaim = user.lastCompoundedRewardWithStakeUnstakeClaim;
+        userInfo[staker].nextCompoundDuringClaim = nextCompound();
+        userInfo[staker].lastCompoundedRewardWithStakeUnstakeClaim = user
+            .lastCompoundedRewardWithStakeUnstakeClaim;
 
         stopMigrate[staker] = true;
     }

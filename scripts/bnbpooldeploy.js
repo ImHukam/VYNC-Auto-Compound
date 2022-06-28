@@ -1,10 +1,9 @@
-const hre = require("hardhat");
+const { upgrades, ethers } = require("hardhat");
 
 async function main() {
   
-  const BUSDPixelSafePool = await hre.ethers.getContractFactory("BNBVYNCSTAKE");
-  const bUSDPixelSafePool = await BUSDPixelSafePool.deploy();
-
+  const BUSDPixelSafePool = await ethers.getContractFactory("BNBVYNCSTAKE");
+  const bUSDPixelSafePool = await upgrades.deployProxy(BUSDPixelSafePool);
   await bUSDPixelSafePool.deployed();
 
   console.log("deployed to:", bUSDPixelSafePool.address);

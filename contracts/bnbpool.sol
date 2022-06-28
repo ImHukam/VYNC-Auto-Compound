@@ -3,12 +3,13 @@
 
 pragma solidity ^0.8.13;
 
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IUniswapV2Router.sol";
 import "./interfaces/IUniswapV2Factory.sol";
 import "./interfaces/IUniswapV2Pair.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@uniswap/v2-core/contracts/libraries/Math.sol";
 
 interface GetDataInterface {
@@ -51,17 +52,21 @@ interface TreasuryInterface {
 }
 
 interface busdBnbLpAddress {
-    function getReserves() external view returns (uint112, uint112, uint32);
+    function getReserves()
+        external
+        view
+        returns (
+            uint112,
+            uint112,
+            uint32
+        );
 }
 
-contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
-    address public dataAddress = 0x99d33F7Da7f39429342287E6501f336C92A5217e;
-    GetDataInterface data = GetDataInterface(dataAddress);
-    address public TreasuryAddress = 0xA4FE6E8150770132c32e4204C2C1Ff59783eDfA0;
-    TreasuryInterface treasury = TreasuryInterface(TreasuryAddress);
-    address public bnbBusdPriceAddress = 0xe0e92035077c39594793e61802a350347c320cf2; // lp address
-    busdBnbLpAddress bnbPrice = busdBnbLpAddress(bnbBusdPriceAddress);
-
+contract BNBVYNCSTAKE is
+    Initializable,
+    ReentrancyGuardUpgradeable,
+    OwnableUpgradeable
+{
     struct stakeInfoData {
         uint256 compoundStart;
         bool isCompoundStartSet;
@@ -84,31 +89,31 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
         uint256 lastCompoundedRewardWithStakeUnstakeClaim;
     }
 
-    IERC20 public vync = IERC20(0x71BE9BA58e0271b967a980eD8e59C07fF2108C85);
-
-    IUniswapV2Router02 public router = IUniswapV2Router02(0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3);
-    IUniswapV2Factory public factory = IUniswapV2Factory(0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc);
-    address lpToken = 0x6891cFd3B1A5282B608a1F6921BC7e5130436db3;
-
-    IERC20 public bnb = IERC20(router.WETH());
-
-    uint256 public constant MAX_INT = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
-
-    uint256 decimal18 = 1e18;
-    uint256 decimal4 = 1e4;
-
+    IERC20 public vync;
+    IERC20 public bnb;
+    IUniswapV2Router02 public router;
+    IUniswapV2Factory public factory;
+    address public dataAddress;
+    GetDataInterface data;
+    address public TreasuryAddress;
+    TreasuryInterface treasury;
+    address public bnbBusdPriceAddress;
+    busdBnbLpAddress bnbPrice;
     mapping(address => userInfoData) public userInfo;
+    mapping(address => bool) public isBlock;
     stakeInfoData public stakeInfo;
+    address lpToken;
+    uint256 public MAX_INT;
+    uint256 decimal18;
+    uint256 decimal4;
     uint256 s; // total staking amount
     uint256 u; //total unstaking amount
     uint256 public totalSupply;
-    bool public isClaim = true;
+    bool public isClaim;
     bool public fixUnstakeAmount;
-    uint256 public stake_fee = 5 * decimal18;
-    uint256 public unstake_fee = 5 * decimal18;
+    uint256 public stake_fee;
+    uint256 public unstake_fee;
     address public feeReceiver;
-
-    mapping(address => bool) public isBlock;
 
     event rewardClaim(address indexed user, uint256 rewards);
     event Stake(address account, uint256 stakeAmount);
@@ -117,9 +122,28 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
     event TreasuryAddressSet(address newTreasuryAddresss);
     event SetCompoundStart(uint256 _blocktime);
 
-    constructor() {
+    function initialize() public initializer {
+        __Ownable_init_unchained();
+        __ReentrancyGuard_init_unchained();
         stakeInfo.compoundStart = block.timestamp;
         feeReceiver = msg.sender;
+        dataAddress = 0x99d33F7Da7f39429342287E6501f336C92A5217e;
+        data = GetDataInterface(dataAddress);
+        TreasuryAddress = 0xA4FE6E8150770132c32e4204C2C1Ff59783eDfA0;
+        treasury = TreasuryInterface(TreasuryAddress);
+        bnbBusdPriceAddress = 0xe0e92035077c39594793e61802a350347c320cf2; // lp address
+        bnbPrice = busdBnbLpAddress(bnbBusdPriceAddress);
+        vync = IERC20(0x71BE9BA58e0271b967a980eD8e59C07fF2108C85);
+        bnb = IERC20(router.WETH());
+        router = IUniswapV2Router02(0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3);
+        factory = IUniswapV2Factory(0xB7926C0430Afb07AA7DEfDE6DA862aE0Bde767bc);
+        lpToken = 0x6891cFd3B1A5282B608a1F6921BC7e5130436db3;
+        MAX_INT = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
+        decimal18 = 1e18;
+        decimal4 = 1e4;
+        isClaim = true;
+        stake_fee = 5 * decimal18;
+        unstake_fee = 5 * decimal18;
     }
 
     function set_compoundStart(uint256 _blocktime) public onlyOwner {
@@ -166,7 +190,7 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
         isBlock[_address] = is_Block;
     }
 
-    function changeFeeReceiver(address _address) public onlyOwner{
+    function changeFeeReceiver(address _address) public onlyOwner {
         feeReceiver = _address;
     }
 
@@ -200,14 +224,14 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
             "exceed total stake limit"
         );
 
-        (uint256 _busdAmount, uint256 _bnbAmount,) = bnbPrice.getReserves();
+        (uint256 _busdAmount, uint256 _bnbAmount, ) = bnbPrice.getReserves();
 
-        uint256 _bnbPrice = _busdAmount/_bnbAmount;
-        _bnbPrice= _bnbPrice*decimal18;
-        uint256 fee = (stake_fee*decimal18)/_bnbPrice;
-        require(amount > fee,"amount less then stake fee");
-        amount = amount-fee;
-        amount1 = amount1-fee;
+        uint256 _bnbPrice = _busdAmount / _bnbAmount;
+        _bnbPrice = _bnbPrice * decimal18;
+        uint256 fee = (stake_fee * decimal18) / _bnbPrice;
+        require(amount > fee, "amount less then stake fee");
+        amount = amount - fee;
+        amount1 = amount1 - fee;
         payable(feeReceiver).transfer(fee);
 
         userInfo[msg.sender]
@@ -237,7 +261,7 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
             }
         }
 
-        (,uint256 res1,) = getSwappingPair().getReserves();
+        (, uint256 res1, ) = getSwappingPair().getReserves();
         uint256 amountToSwap = calculateSwapInAmount(res1, amount);
         uint256 minimumAmount = data.swapAmountCalculation(amountToSwap);
         uint256 vyncOut = swapbnbToVync(amountToSwap, minimumAmount);
@@ -317,14 +341,14 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
             _amount = stakeBalance;
         }
 
-        (uint256 _busdAmount, uint256 _bnbAmount,) = bnbPrice.getReserves();
+        (uint256 _busdAmount, uint256 _bnbAmount, ) = bnbPrice.getReserves();
 
-        uint256 _bnbPrice = _busdAmount/_bnbAmount;
-        _bnbPrice= _bnbPrice*decimal18;
-        uint256 fee = (unstake_fee*decimal18)/_bnbPrice;
-        require(_amount> fee,"amount less then stake fee");
-        _amount = _amount-fee;
-        amount1= amount1 - fee;
+        uint256 _bnbPrice = _busdAmount / _bnbAmount;
+        _bnbPrice = _bnbPrice * decimal18;
+        uint256 fee = (unstake_fee * decimal18) / _bnbPrice;
+        require(_amount > fee, "amount less then stake fee");
+        _amount = _amount - fee;
+        amount1 = amount1 - fee;
         payable(feeReceiver).transfer(fee);
 
         if (unstakeOption == 1) {
@@ -345,7 +369,7 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
         emit UnStake(msg.sender, amount1);
 
         // reward update
-        if ((amount1+fee) < stakeBalance) {
+        if ((amount1 + fee) < stakeBalance) {
             uint256 _pendingReward = compoundedReward(msg.sender);
 
             userInfo[msg.sender]
@@ -367,14 +391,16 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
                 lpAmountNeeded;
             userInfo[msg.sender].stakeBalanceWithReward =
                 userInfo[msg.sender].stakeBalanceWithReward -
-                amount1 - fee;
+                amount1 -
+                fee;
             userInfo[msg.sender].stakeBalance =
                 userInfo[msg.sender].stakeBalance -
-                amount1 - fee;
-            u = u + amount1+fee;
+                amount1 -
+                fee;
+            u = u + amount1 + fee;
         }
 
-        if ((amount1+fee) >= stakeBalance) {
+        if ((amount1 + fee) >= stakeBalance) {
             u = u + stakeBalance;
             userInfo[msg.sender].pendingRewardAfterFullyUnstake = pending;
             userInfo[msg.sender].isClaimAferUnstake = true;
@@ -494,7 +520,6 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
                         aprChangePercentage) / 100);
             }
         }
-
     }
 
     function compoundedRewardInVync(address user)
@@ -749,6 +774,11 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
 
         treasury.send(msg.sender, reward);
         emit rewardClaim(msg.sender, reward);
+        if (userInfo[msg.sender].autoClaimWithStakeUnstake != 0) {
+            userInfo[msg.sender].stakeBalanceWithReward =
+                userInfo[msg.sender].stakeBalanceWithReward -
+                userInfo[msg.sender].autoClaimWithStakeUnstake;
+        }
         userInfo[msg.sender].autoClaimWithStakeUnstake = 0;
         userInfo[msg.sender].lastClaimTimestamp = block.timestamp;
         userInfo[msg.sender].nextCompoundDuringClaim = nextCompound();
@@ -877,7 +907,7 @@ contract BNBVYNCSTAKE is ReentrancyGuard, Ownable {
         view
         returns (uint256 lpNeeded)
     {
-        (,uint256 res1, ) = getSwappingPair().getReserves();
+        (, uint256 res1, ) = getSwappingPair().getReserves();
         lpNeeded = (amount * (getSwappingPair().totalSupply())) / (res1) / 2;
     }
 
